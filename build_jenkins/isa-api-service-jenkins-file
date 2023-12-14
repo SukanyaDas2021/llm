@@ -1,0 +1,120 @@
+pipeline {
+    agent any
+    	options {
+            retry(3)
+    	}
+	environment {
+		 serverType="${params.serverType}"
+		 serverIpAddress="${params.serverIpAddress}"
+		 environmentType="${params.environmentType}"
+		 serverCredentialName="${params.serverCredentialName}"
+		 serviceName="${params.serviceName}"
+		 serviceFolder="${params.serviceFolder}"
+		 appVersion="${env.BUILD_ID}"
+		 httpPort="${env.httpPort}"
+		 httpsPort="${env.httpsPort}"
+	}
+    stages {
+        
+		stage('Discarding existing images in server') { 
+			steps {	
+			   cleanDocker(serviceName);
+			}
+		}
+
+        stage('Cleaning up work space') {
+			steps {
+                cleanWs()
+			}
+        }
+        
+        stage('Git source code checkout') {
+			steps {
+				 checkout scm
+			}
+        }        
+		
+        stage('Creating docker images') { 
+			steps {
+			     sh "SERVER_TYPE=${serverType} ACCOUNT=${ACCOUNT_NAME} TAG=${appVersion} SERVICE_NAME=${serviceName} SERVICE_FOLDER=${serviceFolder} ENVIRONMENT_TYPE=${environmentType} docker-compose -f ${env.WORKSPACE}/docker-compose.aws.yml build"
+			}
+		}	
+		
+		stage('Pushing images to ECR') { 
+			steps {			  
+			   sh "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ACCOUNT_NAME}"
+			   pushImageToECR(serviceName);
+			}
+		}
+		
+		stage('Deploying images on web server') { 
+			steps {			
+				sshagent(["${serverCredentialName}"]) {
+					script{
+						credentials = "ssh -o StrictHostKeyChecking=no ec2-user@${serverIpAddress}"
+					 }				 
+					cleanContainerInServer(credentials,serviceName);	
+					cleanImagesInServer(credentials,serviceName);
+					sh (script: "${credentials} docker system prune -a -f", returnStatus: true)
+					createDockerContainerInServer(credentials,serviceName);				
+				}			  
+			}
+		}
+
+		 stage('Cleaning up work space to avoid disk usage') {
+			steps {
+                cleanWs();
+			}
+        }
+    }    
+}
+
+def cleanDocker(service) {
+	 try {		
+		 // sh "docker rmi -f  \$(docker images |grep '${ACCOUNT_NAME}/${serverType}_${service}')"	
+		 // sh "docker rmi \$(docker images --filter \"dangling=true\" -q --no-trunc)"
+		  sh "docker image prune --all -f"		
+	 }
+	 catch (exc) {
+        echo 'WARNING: Something failed!!!'
+    }
+
+	// sh "docker image prune -a"
+	echo 'cleared all the images'
+}
+
+def pushImageToECR(service) {    
+   
+	echo "WORKING WITH ${service}";
+	sh "docker push ${ACCOUNT_NAME}/${serverType}_${service}:${appVersion}"   
+}
+
+
+
+def cleanImagesInServer(credentials,service) {
+	 try {
+		echo "Working on cleaing the image for ${service}";
+		sh (script: "${credentials} docker rmi ${ACCOUNT_NAME}/${serverType}_${service}:${appVersion}", returnStatus: true)
+	 }
+	 catch (exc) {
+        echo 'WARNING: Something failed!!!'
+    }
+	echo 'cleared all the images'
+	sh "${credentials} docker image prune -f"
+}
+
+def cleanContainerInServer(credentials,service) {
+	
+	echo "Working on cleaing the container for ${service}";
+	sh (script: "${credentials} docker stop ${service}", returnStatus: true)
+	sh (script: "${credentials} docker rm ${service}", returnStatus: true)	
+	sh (script: "${credentials} docker container prune -f", returnStatus: true)
+}
+
+def createDockerContainerInServer(credentials,service) {
+	echo "Working on creating container for ${service} with http port is ${httpPort} and https sort ${httpsPort}";
+	sh "${credentials} aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${ACCOUNT_NAME}"
+	sh "${credentials} docker run -d --privileged \
+	-p ${httpPort}:8081 --name ${service} \
+	${ACCOUNT_NAME}/${serverType}_${service}:${appVersion}"
+}
