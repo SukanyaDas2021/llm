@@ -1,0 +1,10 @@
+version: '3.4'
+
+services:
+  isawebservice:
+    image: ${ACCOUNT}/${SERVER_TYPE}_${SERVICE_NAME}:${TAG}
+    ports:
+      - 8081
+    build:
+      context: .
+      dockerfile: Dockerfile
