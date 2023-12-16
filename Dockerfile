@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV FLASK_ENV=prd
-ENV PARAMETER_STORE=/isa-main/Dev/Smtp/Password
+ENV PARAMETER_STORE=/isa-main/Dev/OpenAI/API/AccessKey
 
 # Expose the port that Flask will run on
 EXPOSE 8081
